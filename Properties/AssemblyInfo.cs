@@ -27,3 +27,4 @@ using BundleRefTablePlugin;
 
 [assembly: RegisterCustomHandler(CustomHandlerType.Res, typeof(BundleRefTableCustomActionHandler), resType: FrostySdk.Managers.Entries.ResourceType.BundleRefTableResource)]
 [assembly: RegisterOptionsExtension(typeof(BRTOptions), Frosty.Core.PluginManagerType.Editor)]
+[assembly: RegisterMenuExtension(typeof(DuplicateHeadMenuExtension))]
