@@ -17,6 +17,12 @@ namespace BundleRefTablePlugin
 {
     public static class BRTUtils
     {
+        /// <summary>
+        /// Returns true if the current game profile uses the legacy BRT format
+        /// with 32-bit FNV1 hashes in asset lookups (e.g. FIFA 17).
+        /// </summary>
+        public static bool IsLegacyBrtFormat => ProfilesLibrary.DataVersion <= (int)ProfileVersion.Fifa17;
+
         public static string ReadString(NativeReader reader, ulong stringPos)
         {
             long currentPos = reader.Position;
@@ -28,6 +34,32 @@ namespace BundleRefTablePlugin
             reader.Position = currentPos;
 
             return stringData;
+        }
+
+        /// <summary>
+        /// Standard FNV-1 32-bit hash used by FIFA 17 BRT asset lookups.
+        /// </summary>
+        public static uint Fnv1Hash32(string s)
+        {
+            uint h = 0x811c9dc5;
+            byte[] bytes = Encoding.ASCII.GetBytes(s.ToLower());
+            foreach (byte b in bytes)
+            {
+                h = unchecked(h * 0x01000193);
+                h ^= b;
+            }
+            return h;
+        }
+
+        /// <summary>
+        /// Returns the appropriate hash for an asset path based on the current game profile.
+        /// </summary>
+        public static ulong HashAssetPath(string path)
+        {
+            if (IsLegacyBrtFormat)
+                return Fnv1Hash32(path);
+            else
+                return FNV64StringHash.Fnv64String8(path, FNV64StringHash.CharCase.Lower);
         }
     }
 
@@ -70,14 +102,20 @@ namespace BundleRefTablePlugin
 
             public AssetLookup(NativeReader reader)
             {
-                Hash = reader.ReadULong();
+                if (BRTUtils.IsLegacyBrtFormat)
+                    Hash = reader.ReadUInt();
+                else
+                    Hash = reader.ReadULong();
                 BundleRefIndex = reader.ReadUInt();
                 AssetIndex = reader.ReadUInt();
             }
 
             public void Write(NativeWriter writer)
             {
-                writer.Write(Hash);
+                if (BRTUtils.IsLegacyBrtFormat)
+                    writer.Write((uint)Hash);
+                else
+                    writer.Write(Hash);
                 writer.Write(BundleRefIndex);
                 writer.Write(AssetIndex);
             }
@@ -337,10 +375,13 @@ namespace BundleRefTablePlugin
 
                 // With the size of the string table now known, we can calculate the remaining offsets easily using some math
                 // because we know the size of each entry of each section and how many entries are in each section
+                int assetLookupEntrySize = BRTUtils.IsLegacyBrtFormat ? 12 : 16;
                 ulong newBundleRefsOffset = (ulong)writer.Position;
                 ulong newAssetOffset = newBundleRefsOffset + (ulong)(24 * bundleRefs.Count);
                 ulong newAssetLookupOffset = newAssetOffset + (ulong)(16 * assets.Count);
-                ulong newBundleOffset = newAssetLookupOffset + (ulong)(16 * assetLookups.Count);
+                ulong assetLookupEnd = newAssetLookupOffset + (ulong)(assetLookupEntrySize * assetLookups.Count);
+                // Align bundles section to 16-byte boundary (needed for legacy format with 12-byte lookups)
+                ulong newBundleOffset = (assetLookupEnd + 15) & ~15UL;
 
                 // Then we can go back and write the offsets we left blank before
                 long curPos = writer.Position;
@@ -375,6 +416,9 @@ namespace BundleRefTablePlugin
                 {
                     assetLookups[i].Write(writer);
                 }
+
+                // Pad to 16-byte boundary before bundles section
+                writer.WritePadding(16);
 
                 // Write the bundles
                 for (int i = 0; i < bundleCount; i++)
@@ -560,9 +604,9 @@ namespace BundleRefTablePlugin
         public bool AddDupeEntry(string newAssetPath, string existingAssetPath)
         {
             // Get hashes for the old asset path, new asset path, and new asset filename
-            ulong oldHash = FNV64StringHash.Fnv64String8(existingAssetPath, FNV64StringHash.CharCase.Lower);
-            ulong newHashFull = FNV64StringHash.Fnv64String8(newAssetPath, FNV64StringHash.CharCase.Lower);
-            ulong newHashName = FNV64StringHash.Fnv64String8(newAssetPath.Substring(newAssetPath.LastIndexOf("/") + 1), FNV64StringHash.CharCase.Lower);
+            ulong oldHash = BRTUtils.HashAssetPath(existingAssetPath);
+            ulong newHashFull = BRTUtils.HashAssetPath(newAssetPath);
+            ulong newHashName = BRTUtils.HashAssetPath(newAssetPath.Substring(newAssetPath.LastIndexOf("/") + 1));
 
             // Check if the new asset path already exists in the asset lookups
             List<int> indicesToRemove = new List<int>();
